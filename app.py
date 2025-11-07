@@ -134,7 +134,7 @@ if df_entries.empty:
 with st.sidebar:
     st.header("Settings")
     monthly_target = st.number_input(
-        "Monthly Target (hrs)", min_value=0.0, value=160.0, step=5.0
+        "Monthly Target (hrs)", min_value=0.0, value=120.0, step=5.0
     )
     st.markdown("---")
     st.subheader("Bulk Import")
