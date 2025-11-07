@@ -457,4 +457,4 @@ doc.addEventListener('keydown', e => {
 # 14. FOOTER
 # --------------------------------------------------------------
 st.markdown("---")
-st.caption("Made with Love using **Streamlit** • Data stored in `working_hours.db`")
+st.caption(" • Data stored in `working_hours.db`")
