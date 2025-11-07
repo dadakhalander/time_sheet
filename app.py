@@ -1,455 +1,195 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
-from datetime import datetime, time, date
-import io
-import plotly.express as px
-import plotly.graph_objects as go
+from datetime import datetime, time
 
-# --------------------------------------------------------------
-# 1. PAGE CONFIG & THEMING
-# --------------------------------------------------------------
-st.set_page_config(
-    page_title="Working Hours Tracker Pro",
-    page_icon="⏰",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# Page configuration
+st.set_page_config(page_title="Working Hours Tracker", page_icon="⏰", layout="wide")
 
-# Dark-mode toggle
-if "theme" not in st.session_state:
-    st.session_state.theme = "light"
+# Initialize session state for entries
+if 'entries' not in st.session_state:
+    st.session_state.entries = []
 
-def switch_theme():
-    st.session_state.theme = "dark" if st.session_state.theme == "light" else "light"
+def calculate_hours(start_time, end_time, break_minutes):
+    """Calculate working hours"""
+    start_minutes = start_time.hour * 60 + start_time.minute
+    end_minutes = end_time.hour * 60 + end_time.minute
+    total_minutes = end_minutes - start_minutes - break_minutes
+    return round(total_minutes / 60, 2) if total_minutes > 0 else 0
 
-with st.sidebar:
-    st.button("🌙 Toggle Dark Mode", on_click=switch_theme)
+def get_month_year(date_str):
+    """Get month-year string"""
+    d = datetime.strptime(date_str, '%Y-%m-%d')
+    return d.strftime('%Y-%m')
 
-theme = st.session_state.theme
-if theme == "dark":
-    st.markdown(
-        """
-        <style>
-        .css-1d391kg {background-color:#0e1117; color:#fafafa;}
-        .css-1v0mbdj {background-color:#262730;}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+def format_month(month_year):
+    """Format month for display"""
+    d = datetime.strptime(month_year, '%Y-%m')
+    return d.strftime('%B %Y')
 
-# --------------------------------------------------------------
-# 2. DATABASE SETUP (SQLite)
-# --------------------------------------------------------------
-DB_FILE = "working_hours.db"
+# Header
+st.title("⏰ Working Hours Tracker")
+st.markdown("Track your daily working hours with ease")
+st.markdown("---")
 
-def get_conn():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL,
-            start_time TEXT NOT NULL,
-            end_time TEXT NOT NULL,
-            break_minutes INTEGER NOT NULL,
-            hours REAL NOT NULL
-        )"""
-    )
-    return conn
+# Input section
+st.subheader("📝 Add New Entry")
 
-def load_entries():
-    conn = get_conn()
-    df = pd.read_sql("SELECT * FROM entries ORDER BY date DESC", conn)
-    conn.close()
-    return df
-
-def add_entry(entry):
-    conn = get_conn()
-    conn.execute(
-        """INSERT INTO entries (date, start_time, end_time, break_minutes, hours)
-           VALUES (?,?,?,?,?)""",
-        (entry["date"], entry["start_time"], entry["end_time"], entry["break_minutes"], entry["hours"]),
-    )
-    conn.commit()
-    conn.close()
-
-def update_entry(entry_id, entry):
-    conn = get_conn()
-    conn.execute(
-        """UPDATE entries SET date=?, start_time=?, end_time=?, break_minutes=?, hours=?
-           WHERE id=?""",
-        (entry["date"], entry["start_time"], entry["end_time"], entry["break_minutes"], entry["hours"], entry_id),
-    )
-    conn.commit()
-    conn.close()
-
-def delete_entry(entry_id):
-    conn = get_conn()
-    conn.execute("DELETE FROM entries WHERE id=?", (entry_id,))
-    conn.commit()
-    conn.close()
-
-# --------------------------------------------------------------
-# 3. HELPER FUNCTIONS
-# --------------------------------------------------------------
-def calculate_hours(start: time, end: time, break_min: int) -> float:
-    s = start.hour * 60 + start.minute
-    e = end.hour * 60 + end.minute
-    total = e - s - break_min
-    return round(total / 60, 2) if total > 0 else 0.0
-
-def month_year(date_str: str) -> str:
-    return datetime.strptime(date_str, "%Y-%m-%d").strftime("%Y-%m")
-
-def format_month(my: str) -> str:
-    return datetime.strptime(my, "%Y-%m").strftime("%B %Y")
-
-def df_to_bytes(df: pd.DataFrame, fmt: str = "csv"):
-    if fmt == "csv":
-        return df.to_csv(index=False).encode("utf-8")
-    else:  # excel
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            df.to_excel(writer, index=False, sheet_name="Timesheet")
-        return output.getvalue()
-
-# --------------------------------------------------------------
-# 4. LOAD DATA
-# --------------------------------------------------------------
-df_entries = load_entries()
-if df_entries.empty:
-    df_entries = pd.DataFrame(
-        columns=["id", "date", "start_time", "end_time", "break_minutes", "hours"]
-    )
-
-# --------------------------------------------------------------
-# 5. SIDEBAR – SETTINGS & BULK UPLOAD
-# --------------------------------------------------------------
-with st.sidebar:
-    st.header("⚙️ Settings")
-    monthly_target = st.number_input(
-        "Monthly Target (hrs)", min_value=0.0, value=160.0, step=5.0
-    )
-    st.markdown("---")
-    st.subheader("📥 Bulk Import")
-    uploaded = st.file_uploader(
-        "Upload CSV (Date,Start,End,Break)", type=["csv"], key="bulk"
-    )
-    if uploaded:
-        try:
-            up_df = pd.read_csv(uploaded)
-            required = {"Date", "Start", "End", "Break"}
-            if not required.issubset(up_df.columns):
-                st.error(f"CSV must contain columns: {required}")
-            else:
-                for _, row in up_df.iterrows():
-                    hrs = calculate_hours(
-                        time.fromisoformat(row["Start"]),
-                        time.fromisoformat(row["End"]),
-                        int(row["Break"]),
-                    )
-                    if hrs > 0:
-                        add_entry(
-                            {
-                                "date": str(row["Date"]),
-                                "start_time": row["Start"],
-                                "end_time": row["End"],
-                                "break_minutes": int(row["Break"]),
-                                "hours": hrs,
-                            }
-                        )
-                st.success("Bulk import completed!")
-                st.rerun()
-        except Exception as e:
-            st.error(f"Import failed: {e}")
-
-# --------------------------------------------------------------
-# 6. MAIN UI – ADD / EDIT ENTRY
-# --------------------------------------------------------------
-st.title("⏰ Working Hours Tracker **Pro**")
-st.markdown("Track, visualise, and export your work time with power-user features.")
-
-# ---- Add new entry -------------------------------------------------
-st.subheader("📝 Add / Edit Entry")
-col1, col2, col3, col4, col5, col6 = st.columns([2, 1.5, 1.5, 1, 1, 1.5])
-
-edit_mode = st.session_state.get("edit_mode", False)
-edit_id = st.session_state.get("edit_id", None)
+col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 1.5, 1.5])
 
 with col1:
-    entry_date = st.date_input(
-        "Date",
-        value=date.today() if not edit_mode else datetime.strptime(df_entries.loc[df_entries["id"] == edit_id, "date"].iloc[0], "%Y-%m-%d"),
-        key="date_input",
-    )
+    entry_date = st.date_input("Date", datetime.now(), key="date")
+
 with col2:
-    start_time = st.time_input(
-        "Start",
-        value=time(9, 0) if not edit_mode else time.fromisoformat(df_entries.loc[df_entries["id"] == edit_id, "start_time"].iloc[0]),
-        key="start_input",
-    )
+    start_time = st.time_input("Start Time", time(9, 0), key="start")
+
 with col3:
-    end_time = st.time_input(
-        "End",
-        value=time(17, 0) if not edit_mode else time.fromisoformat(df_entries.loc[df_entries["id"] == edit_id, "end_time"].iloc[0]),
-        key="end_input",
-    )
+    end_time = st.time_input("End Time", time(17, 0), key="end")
+
 with col4:
-    break_min = st.number_input(
-        "Break (mins)",
-        min_value=0,
-        value=30 if not edit_mode else int(df_entries.loc[df_entries["id"] == edit_id, "break_minutes"].iloc[0]),
-        step=5,
-        key="break_input",
-    )
+    break_minutes = st.number_input("Break (mins)", min_value=0, value=30, step=5, key="break")
+
 with col5:
     st.markdown("<br>", unsafe_allow_html=True)
-    if edit_mode:
-        if st.button("💾 Update", type="primary", use_container_width=True):
-            hrs = calculate_hours(start_time, end_time, break_min)
-            if hrs > 0:
-                update_entry(
-                    edit_id,
-                    {
-                        "date": entry_date.strftime("%Y-%m-%d"),
-                        "start_time": start_time.strftime("%H:%M"),
-                        "end_time": end_time.strftime("%H:%M"),
-                        "break_minutes": break_min,
-                        "hours": hrs,
-                    },
-                )
-                st.session_state.edit_mode = False
-                st.success("Entry updated!")
-                st.rerun()
-            else:
-                st.error("End must be after start.")
+    add_button = st.button("➕ Add Entry", type="primary", use_container_width=True)
+
+# Add entry
+if add_button:
+    hours = calculate_hours(start_time, end_time, break_minutes)
+    
+    if hours > 0:
+        new_entry = {
+            'id': len(st.session_state.entries) + 1,
+            'date': entry_date.strftime('%Y-%m-%d'),
+            'start_time': start_time.strftime('%H:%M'),
+            'end_time': end_time.strftime('%H:%M'),
+            'break_minutes': break_minutes,
+            'hours': hours
+        }
+        st.session_state.entries.append(new_entry)
+        st.session_state.entries = sorted(st.session_state.entries, key=lambda x: x['date'], reverse=True)
+        st.success(f"✅ Entry added successfully! {hours} hours logged.")
+        st.rerun()
     else:
-        if st.button("➕ Add", type="primary", use_container_width=True):
-            hrs = calculate_hours(start_time, end_time, break_min)
-            if hrs > 0:
-                add_entry(
-                    {
-                        "date": entry_date.strftime("%Y-%m-%d"),
-                        "start_time": start_time.strftime("%H:%M"),
-                        "end_time": end_time.strftime("%H:%M"),
-                        "break_minutes": break_min,
-                        "hours": hrs,
-                    }
-                )
-                st.success(f"Added {hrs} hrs")
-                st.rerun()
-            else:
-                st.error("End must be after start.")
-with col6:
-    st.markdown("<br>", unsafe_allow_html=True)
-    if edit_mode:
-        if st.button("❌ Cancel"):
-            st.session_state.edit_mode = False
-            st.rerun()
+        st.error("❌ End time must be after start time!")
 
-# --------------------------------------------------------------
-# 7. RECENT ENTRIES (Last 7) + Inline Edit / Delete
-# --------------------------------------------------------------
-if not df_entries.empty:
-    st.markdown("---")
-    st.subheader("📋 Recent Entries (Last 7)")
+st.markdown("---")
 
-    recent = df_entries.head(7)
-    for idx, row in recent.iterrows():
-        c1, c2, c3, c4, c5, c6, c7 = st.columns([2, 1.3, 1.3, 1, 1.3, 0.8, 0.8])
-        c1.write(f"**📅 {row['date']}**")
-        c2.write(f"🕐 {row['start_time']}")
-        c3.write(f"🕔 {row['end_time']}")
-        c4.write(f"☕ {row['break_minutes']}m")
-        c5.write(f"**⏱️ {row['hours']} hrs**")
-        if c6.button("✏️", key=f"edit_{row['id']}"):
-            st.session_state.edit_mode = True
-            st.session_state.edit_id = row["id"]
+# Display entries
+if st.session_state.entries:
+    # Last 5 entries
+    st.subheader("📋 Recent Entries (Last 5)")
+    
+    last_5 = st.session_state.entries[:5]
+    
+    for i, entry in enumerate(last_5):
+        c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1.5, 1, 1.5, 1])
+        
+        c1.write(f"**📅 {entry['date']}**")
+        c2.write(f"🕐 {entry['start_time']}")
+        c3.write(f"🕔 {entry['end_time']}")
+        c4.write(f"☕ {entry['break_minutes']}m")
+        c5.write(f"**⏱️ {entry['hours']} hrs**")
+        
+        if c6.button("🗑️", key=f"delete_{entry['id']}"):
+            st.session_state.entries = [e for e in st.session_state.entries if e['id'] != entry['id']]
             st.rerun()
-        if c7.button("🗑️", key=f"del_{row['id']}"):
-            delete_entry(row["id"])
-            st.rerun()
-        if idx < len(recent) - 1:
+        
+        if i < len(last_5) - 1:
             st.markdown("---")
-
-# --------------------------------------------------------------
-# 8. SUMMARY METRICS
-# --------------------------------------------------------------
-if not df_entries.empty:
+    
     st.markdown("---")
+    
+    # Summary
     st.subheader("📊 Summary")
-
-    total_h = df_entries["hours"].sum()
-    total_entries = len(df_entries)
-    months = df_entries["date"].apply(month_year).nunique()
-
-    col1, col2, col3, col4 = st.columns(4)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    total_entries = len(st.session_state.entries)
+    total_hours = sum(e['hours'] for e in st.session_state.entries)
+    unique_months = len(set(get_month_year(e['date']) for e in st.session_state.entries))
+    
     col1.metric("Total Entries", total_entries)
-    col2.metric("Total Hours", f"{total_h:.2f} hrs")
-    col3.metric("Months Tracked", months)
-    col4.metric("Avg Hours/Day", f"{total_h/total_entries:.2f}" if total_entries else "0")
-
-# --------------------------------------------------------------
-# 9. SEARCH & FILTER
-# --------------------------------------------------------------
-if not df_entries.empty:
+    col2.metric("Total Hours", f"{total_hours:.2f} hrs")
+    col3.metric("Months Tracked", unique_months)
+    
     st.markdown("---")
-    st.subheader("🔍 Search & Filter")
-    search = st.text_input("Search date (YYYY-MM-DD) or keyword")
-    filtered = df_entries
-    if search:
-        filtered = filtered[filtered["date"].str.contains(search, na=False)]
-
-    # Month selector for detailed view
-    months_list = sorted(df_entries["date"].apply(month_year).unique(), reverse=True)
-    selected_month = st.selectbox(
-        "View by Month", months_list, format_func=format_month, key="month_sel"
-    )
-    month_df = filtered[filtered["date"].apply(month_year) == selected_month].copy()
-    month_total = month_df["hours"].sum()
-
-    st.write(f"**{format_month(selected_month)} – {month_total:.2f} hrs**")
-
-    # Table
-    disp = month_df[["date", "start_time", "end_time", "break_minutes", "hours"]].copy()
-    disp.columns = ["Date", "Start", "End", "Break (mins)", "Hours"]
-    disp = disp.sort_values("Date", ascending=False)
-    st.dataframe(disp, use_container_width=True, hide_index=True)
-
-    # --------------------------------------------------------------
-    # 10. CHARTS
-    # --------------------------------------------------------------
+    
+    # Month view
+    st.subheader("📅 View by Month")
+    
+    months = sorted(list(set(get_month_year(e['date']) for e in st.session_state.entries)), reverse=True)
+    
+    selected_month = st.selectbox("Select Month", months, format_func=format_month)
+    
+    month_entries = [e for e in st.session_state.entries if get_month_year(e['date']) == selected_month]
+    month_total = sum(e['hours'] for e in month_entries)
+    
+    st.write(f"**{format_month(selected_month)} - Total: {month_total:.2f} hours**")
+    
+    # Create table
+    df_list = []
+    for e in month_entries:
+        df_list.append({
+            'Date': e['date'],
+            'Start': e['start_time'],
+            'End': e['end_time'],
+            'Break (mins)': e['break_minutes'],
+            'Hours': e['hours']
+        })
+    
+    df = pd.DataFrame(df_list)
+    df = df.sort_values('Date', ascending=False)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+    
     st.markdown("---")
-    st.subheader("📈 Visualisations")
-
-    # Daily hours
-    daily = (
-        df_entries.groupby("date")["hours"]
-        .sum()
-        .reset_index()
-        .sort_values("date")
-    )
-    daily["date"] = pd.to_datetime(daily["date"])
-
-    fig_daily = px.bar(
-        daily,
-        x="date",
-        y="hours",
-        title="Daily Working Hours",
-        labels={"date": "Date", "hours": "Hours"},
-        color="hours",
-        color_continuous_scale="Viridis",
-    )
-    fig_daily.update_layout(showlegend=False)
-    st.plotly_chart(fig_daily, use_container_width=True)
-
-    # Monthly progress vs target
-    monthly = (
-        df_entries.copy()
-        .assign(month=lambda x: pd.to_datetime(x["date"]).dt.to_period("M").astype(str))
-        .groupby("month")["hours"]
-        .sum()
-        .reset_index()
-    )
-    monthly["target"] = monthly_target
-
-    fig_month = go.Figure()
-    fig_month.add_trace(
-        go.Bar(name="Actual", x=monthly["month"], y=monthly["hours"], marker_color="steelblue")
-    )
-    fig_month.add_trace(
-        go.Scatter(
-            name="Target",
-            x=monthly["month"],
-            y=monthly["target"],
-            mode="lines+markers",
-            line=dict(dash="dash", color="crimson"),
-        )
-    )
-    fig_month.update_layout(
-        title="Monthly Hours vs Target",
-        xaxis_title="Month",
-        yaxis_title="Hours",
-        barmode="group",
-    )
-    st.plotly_chart(fig_month, use_container_width=True)
-
-    # --------------------------------------------------------------
-    # 11. DOWNLOADS
-    # --------------------------------------------------------------
-    st.markdown("---")
-    st.subheader("💾 Export Data")
-
-    col_d1, col_d2 = st.columns(2)
-
-    # Current month CSV + Excel
-    with col_d1:
-        csv_month = df_to_bytes(disp, "csv")
-        xlsx_month = df_to_bytes(disp, "xlsx")
+    
+    # Download
+    st.subheader("💾 Download Data")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        csv_month = df.to_csv(index=False).encode('utf-8')
         st.download_button(
-            "📄 CSV – Current Month",
+            "📥 Download Current Month",
             csv_month,
             f"timesheet_{selected_month}.csv",
             "text/csv",
+            use_container_width=True
         )
+    
+    with col2:
+        all_data = []
+        for e in st.session_state.entries:
+            all_data.append({
+                'Date': e['date'],
+                'Start': e['start_time'],
+                'End': e['end_time'],
+                'Break (mins)': e['break_minutes'],
+                'Hours': e['hours']
+            })
+        df_all = pd.DataFrame(all_data)
+        csv_all = df_all.to_csv(index=False).encode('utf-8')
         st.download_button(
-            "📊 Excel – Current Month",
-            xlsx_month,
-            f"timesheet_{selected_month}.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-    # All data
-    with col_d2:
-        all_disp = df_entries[["date", "start_time", "end_time", "break_minutes", "hours"]].copy()
-        all_disp.columns = ["Date", "Start", "End", "Break (mins)", "Hours"]
-        all_disp = all_disp.sort_values("Date", ascending=False)
-
-        csv_all = df_to_bytes(all_disp, "csv")
-        xlsx_all = df_to_bytes(all_disp, "xlsx")
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        st.download_button(
-            "📄 CSV – All Data",
+            "📥 Download All Data",
             csv_all,
-            f"timesheet_all_{today_str}.csv",
+            f"timesheet_all_{datetime.now().strftime('%Y-%m-%d')}.csv",
             "text/csv",
+            use_container_width=True
         )
-        st.download_button(
-            "📊 Excel – All Data",
-            xlsx_all,
-            f"timesheet_all_{today_str}.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-    # --------------------------------------------------------------
-    # 12. DANGER ZONE
-    # --------------------------------------------------------------
+    
+    # Clear data
     st.markdown("---")
     with st.expander("⚠️ Danger Zone"):
-        st.warning("These actions **cannot be undone**.")
-        col_z1, col_z2 = st.columns(2)
-        with col_z1:
-            if st.button("🗑️ Delete All Data"):
-                conn = get_conn()
-                conn.execute("DELETE FROM entries")
-                conn.commit()
-                conn.close()
-                st.success("All data cleared!")
-                st.rerun()
-        with col_z2:
-            if st.button("📥 Reset DB (keep schema)"):
-                conn = get_conn()
-                conn.execute("DELETE FROM entries")
-                conn.commit()
-                conn.close()
-                st.success("Database reset!")
-                st.rerun()
+        st.warning("This will delete all your data!")
+        if st.button("🗑️ Clear All Data"):
+            st.session_state.entries = []
+            st.success("All data cleared!")
+            st.rerun()
 
 else:
-    st.info("👋 No entries yet – add your first day above!")
+    st.info("👋 No entries yet! Add your first entry above.")
 
-# --------------------------------------------------------------
-# 13. FOOTER
-# --------------------------------------------------------------
+# Footer
 st.markdown("---")
-st.caption("Made with ❤️ using **Streamlit** • Data stored locally in `working_hours.db`")
+st.caption("Made with ❤️ using Streamlit")
